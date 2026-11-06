@@ -30,6 +30,9 @@ OK
   replayed on startup, with `always` / `everysec` / `no` fsync policies.
   Relative timeouts are stored as absolute deadlines, and a half-written
   command at the end of the file (from a crash) is cut off on load.
+- **AOF rewrite:** `BGREWRITEAOF`, or automatically once the file reaches
+  64 MB and has doubled, replaces the log with one command per key while
+  clients keep writing.
 - **Graceful shutdown:** on `Ctrl+C` / `SIGTERM` the server stops accepting
   clients, lets running commands finish, and force-closes whatever is still
   open after 5 seconds.
@@ -50,6 +53,7 @@ OK
 | `APPEND` | `APPEND key value` | length of the new string |
 | `STRLEN` | `STRLEN key` | length in bytes, `0` if the key does not exist |
 | `TYPE` | `TYPE key` | `string`, `list`, `hash`, `set` or `none` |
+| `BGREWRITEAOF` | `BGREWRITEAOF` | starts compacting the AOF in the background |
 
 **Lists**
 
@@ -189,6 +193,14 @@ strings and returns a `resp.Reply`, without any network or I/O.
 - **Absolute deadlines in the AOF.** `SET k v EX 10` is logged as
   `SET k v PXAT <unix-ms>` and `EXPIRE` as `PEXPIREAT`, so replaying the file
   an hour later does not give keys time they never had.
+- **Rewrite without losing or doubling writes.** The snapshot is taken and
+  the rewrite buffer started under the same write mutex, so every write is
+  either in the snapshot or in the buffer, never both: an `INCR` in both would
+  be counted twice on replay. Only that in-memory snapshot pauses writes;
+  saving it to disk runs while clients keep writing, and the old file keeps
+  receiving every command until the new one is fsynced and atomically renamed
+  over it. Tests check this by running rewrites under concurrent `INCR`s and
+  comparing the replayed counter with the one in memory.
 - **Overflow-safe timeouts.** `SET k v EX 99999999999` is rejected instead of
   overflowing `time.Duration` and expiring right away.
 - **Bounded active expiry.** Each cleanup round holds the write lock, so the
@@ -198,8 +210,8 @@ strings and returns a `resp.Reply`, without any network or I/O.
 
 - No sorted sets.
 - Lists are slices, so `LPUSH` is O(n); a deque would make both ends O(1).
-- The AOF only grows: there is no rewrite yet, so 1000 `SET`s to one key
-  are 1000 entries in the file.
+- An AOF rewrite holds a copy of the whole dataset in memory while it runs.
+  Redis avoids this with `fork()` and copy-on-write.
 - No authentication, no TLS.
 - Active expiry walks past keys without a timeout. With many such keys, keys
   that do have a timeout are sampled less often. Redis avoids this by keeping
@@ -207,6 +219,5 @@ strings and returns a `resp.Reply`, without any network or I/O.
 
 ## Roadmap
 
-- [ ] AOF rewrite, to compact the file
 - [ ] Sorted sets
 - [ ] `KEYS`, `FLUSHALL`

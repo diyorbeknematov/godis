@@ -1,5 +1,6 @@
 # Build output
 /godis
 
-# Data written by -appendonly
+# Data written by -appendonly, and temporary files of an AOF rewrite
 *.aof
+*.aof.rewrite-*

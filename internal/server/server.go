@@ -6,6 +6,7 @@ import (
 	"log"
 	"net"
 	"os"
+	"strings"
 	"sync"
 	"time"
 
@@ -25,6 +26,7 @@ type Server struct {
 	// restart k would hold the wrong value
 	aof     *aof.Log
 	writeMu sync.Mutex
+	bg      sync.WaitGroup // running background AOF rewrites
 
 	// mu guards the fields below: Start and Stop run in different goroutines
 	mu       sync.Mutex
@@ -81,8 +83,10 @@ func (s *Server) Start() error {
 		if err != nil {
 			// Listener was closed by Stop(): normal shutdown, not an error
 			if errors.Is(err, net.ErrClosed) {
-				// Stop closed the connections too; wait until their handlers exit
+				// Stop closed the connections too; wait until their handlers exit,
+				// then for a running rewrite, so the caller can close the AOF safely
 				s.wg.Wait()
+				s.bg.Wait()
 				return nil
 			}
 			// log the error and continue accepting new connections
@@ -216,14 +220,17 @@ func (s *Server) handleConnection(conn net.Conn) {
 
 // execute runs one command and, with persistence on, logs it to the AOF.
 func (s *Server) execute(args []string) resp.Reply {
+	// BGREWRITEAOF needs the server, not just the store, so it is handled here
+	if len(args) > 0 && strings.EqualFold(args[0], "BGREWRITEAOF") {
+		return s.bgRewriteAOF(args)
+	}
+
 	// Reads never touch the AOF, so they skip writeMu and run in parallel
 	if s.aof == nil || len(args) == 0 || !command.IsWrite(args[0]) {
 		return command.Execute(s.store, args)
 	}
 
 	s.writeMu.Lock()
-	defer s.writeMu.Unlock()
-
 	reply, logged := command.Run(s.store, args)
 	for _, cmd := range logged {
 		if err := s.aof.Append(cmd); err != nil {
@@ -232,5 +239,68 @@ func (s *Server) execute(args []string) resp.Reply {
 			log.Printf("aof: append %q: %v", cmd, err)
 		}
 	}
+	s.writeMu.Unlock()
+
+	// After the unlock: starting a rewrite takes writeMu itself
+	if len(logged) > 0 && s.aof.NeedsRewrite() {
+		if err := s.startRewrite(); err != nil && !errors.Is(err, aof.ErrRewriteInProgress) {
+			log.Printf("aof: automatic rewrite: %v", err)
+		}
+	}
 	return reply
+}
+
+func (s *Server) bgRewriteAOF(args []string) resp.Reply {
+	if len(args) != 1 {
+		return resp.Error("ERR wrong number of arguments for 'bgrewriteaof' command")
+	}
+	if s.aof == nil {
+		return resp.Error("ERR AOF is turned off, start the server with -appendonly")
+	}
+
+	err := s.startRewrite()
+	if errors.Is(err, aof.ErrRewriteInProgress) {
+		return resp.Error("ERR Background append only file rewriting already in progress")
+	}
+	if err != nil {
+		return resp.Error("ERR " + err.Error())
+	}
+	return resp.SimpleString("Background append only file rewriting started")
+}
+
+// startRewrite takes a snapshot of the store and writes the new AOF in the
+// background. Writes are paused only for the snapshot itself, which is done
+// in memory; the slow part, writing it to disk, runs while clients keep writing.
+func (s *Server) startRewrite() error {
+	// Under writeMu no write is half done (applied but not yet logged), so the
+	// snapshot and the buffer that starts here split the writes exactly:
+	// everything before is in the snapshot, everything after is in the buffer
+	s.writeMu.Lock()
+	rw, err := s.aof.StartRewrite()
+	if err != nil {
+		s.writeMu.Unlock()
+		return err
+	}
+	snapshot := s.store.Dump()
+	s.writeMu.Unlock()
+
+	s.bg.Add(1)
+	go func() {
+		defer s.bg.Done()
+		defer rw.Abort() // no-op after a successful Commit
+
+		before := s.aof.Size()
+		for _, cmd := range snapshot {
+			if err := rw.Write(cmd); err != nil {
+				log.Printf("aof: rewrite failed, keeping the old file: %v", err)
+				return
+			}
+		}
+		if err := rw.Commit(); err != nil {
+			log.Printf("aof: rewrite failed, keeping the old file: %v", err)
+			return
+		}
+		log.Printf("aof: rewrite done, %d commands, %d -> %d bytes", len(snapshot), before, s.aof.Size())
+	}()
+	return nil
 }

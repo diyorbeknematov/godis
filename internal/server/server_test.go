@@ -12,6 +12,7 @@ import (
 
 	"godis/internal/aof"
 	"godis/internal/command"
+	"godis/internal/resp"
 	"godis/internal/store"
 )
 
@@ -250,5 +251,121 @@ func TestAOFRestart(t *testing.T) {
 	want := "$3\r\nAli\r\n" + "$1\r\n2\r\n" + ":100\r\n"
 	if got != want {
 		t.Errorf("after restart: replies %q, want %q", got, want)
+	}
+}
+
+// Clients keep writing while rewrites run. Every write must end up in the
+// file exactly once: lost, the replayed counter is too low; logged both in the
+// snapshot and in the rewrite buffer, it is too high
+func TestRewriteDuringWrites(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "test.aof")
+	log, err := aof.Open(path, aof.No)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := NewWithStore("127.0.0.1:0", store.New(), log)
+
+	stop := make(chan struct{})
+	var writers sync.WaitGroup
+	for g := 0; g < 8; g++ {
+		writers.Add(1)
+		go func() {
+			defer writers.Done()
+			for {
+				select {
+				case <-stop:
+					return
+				default:
+					s.execute([]string{"INCR", "n"})
+					s.execute([]string{"RPUSH", "l", "x"})
+				}
+			}
+		}()
+	}
+
+	rewrites := 0
+	for deadline := time.Now().Add(300 * time.Millisecond); time.Now().Before(deadline); {
+		if err := s.startRewrite(); err == nil {
+			rewrites++
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	close(stop)
+	writers.Wait()
+	s.bg.Wait()
+	if err := log.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if rewrites < 2 {
+		t.Fatalf("only %d rewrites ran, the test proves nothing", rewrites)
+	}
+
+	replayed := replay(t, path)
+	for _, q := range [][]string{{"GET", "n"}, {"LLEN", "l"}} {
+		want := command.Execute(s.store, q)
+		got := command.Execute(replayed, q)
+		if got != want {
+			t.Errorf("%q after %d rewrites: replayed %#v, in memory %#v", q, rewrites, got, want)
+		}
+	}
+}
+
+func TestBGREWRITEAOF(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "test.aof")
+	log, err := aof.Open(path, aof.No)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer log.Close()
+	s := NewWithStore("127.0.0.1:0", store.New(), log)
+
+	for i := 0; i < 1000; i++ {
+		s.execute([]string{"INCR", "n"})
+	}
+	before := log.Size()
+
+	if got := s.execute([]string{"bgrewriteaof"}); got != resp.SimpleString("Background append only file rewriting started") {
+		t.Fatalf("BGREWRITEAOF = %#v", got)
+	}
+	s.bg.Wait()
+
+	if after := log.Size(); after >= before/10 {
+		t.Errorf("file is %d bytes after rewrite, was %d; want much smaller", after, before)
+	}
+	if got := replay(t, path); command.Execute(got, []string{"GET", "n"}) != resp.BulkString("1000") {
+		t.Error("replayed n is not 1000")
+	}
+
+	if got := s.execute([]string{"BGREWRITEAOF", "x"}); got == nil || got.(resp.Error) == "" {
+		t.Errorf("BGREWRITEAOF with an argument = %#v, want an error", got)
+	}
+	noAOF := New("127.0.0.1:0")
+	if _, isErr := noAOF.execute([]string{"BGREWRITEAOF"}).(resp.Error); !isErr {
+		t.Error("BGREWRITEAOF without AOF did not fail")
+	}
+}
+
+// The file is rewritten on its own once it doubles past the minimum size
+func TestAutoRewrite(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "test.aof")
+	log, err := aof.Open(path, aof.No)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer log.Close()
+	log.RewriteMinSize = 4096
+	s := NewWithStore("127.0.0.1:0", store.New(), log)
+
+	for i := 0; i < 2000; i++ {
+		s.execute([]string{"INCR", "n"})
+	}
+	s.bg.Wait()
+
+	// Without rewrites 2000 INCRs take about 50 KB
+	if size := log.Size(); size > 10*4096 {
+		t.Errorf("file is %d bytes, auto rewrite did not keep it small", size)
+	}
+	if got := replay(t, path); command.Execute(got, []string{"GET", "n"}) != resp.BulkString("2000") {
+		t.Error("replayed n is not 2000")
 	}
 }

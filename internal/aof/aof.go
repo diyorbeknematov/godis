@@ -40,13 +40,29 @@ func ParsePolicy(s string) (Policy, error) {
 
 // Log is an open append-only file. It is safe for concurrent use.
 type Log struct {
-	mu     sync.Mutex
-	f      *os.File
-	w      *resp.Writer
+	path   string
 	policy Policy
+
+	// RewriteMinSize and the doubling rule decide when NeedsRewrite says yes,
+	// like Redis' auto-aof-rewrite-min-size and auto-aof-rewrite-percentage 100
+	RewriteMinSize int64
+
+	mu       sync.Mutex
+	f        *os.File
+	cw       *countingWriter // counts bytes written to f
+	w        *resp.Writer
+	baseSize int64 // file size after the last rewrite (or at Open)
+
+	// While a rewrite runs, every appended command is also kept here and
+	// added to the new file at the end, so nothing written meanwhile is lost
+	rewriting  bool
+	rewriteBuf [][]string
 
 	stopSync func() // stops the EverySec goroutine; nil for other policies
 }
+
+// DefaultRewriteMinSize is the size below which a file is never rewritten automatically.
+const DefaultRewriteMinSize = 64 << 20 // 64 MB, as in Redis
 
 // Open opens path for appending, creating it if needed.
 func Open(path string, policy Policy) (*Log, error) {
@@ -54,26 +70,43 @@ func Open(path string, policy Policy) (*Log, error) {
 	if err != nil {
 		return nil, err
 	}
+	info, err := f.Stat()
+	if err != nil {
+		f.Close()
+		return nil, err
+	}
 
-	l := &Log{f: f, w: resp.NewWriter(f), policy: policy}
+	l := &Log{path: path, policy: policy, RewriteMinSize: DefaultRewriteMinSize}
+	l.setFile(f, info.Size())
+	l.baseSize = info.Size()
 	if policy == EverySec {
 		l.stopSync = l.startSyncLoop(time.Second)
 	}
 	return l, nil
 }
 
+// setFile makes f the file that Append writes to. size is its current size.
+func (l *Log) setFile(f *os.File, size int64) {
+	l.f = f
+	l.cw = &countingWriter{w: f, n: size}
+	l.w = resp.NewWriter(l.cw)
+}
+
 // Append writes one command, in the same RESP form clients send.
 // The data reaches the OS before Append returns; whether it is on disk
 // depends on the policy.
 func (l *Log) Append(args []string) error {
-	cmd := make(resp.Array, len(args))
-	for i, a := range args {
-		cmd[i] = resp.BulkString(a)
-	}
+	cmd := bulkArray(args)
 
 	l.mu.Lock()
 	defer l.mu.Unlock()
 
+	if l.rewriting {
+		l.rewriteBuf = append(l.rewriteBuf, args)
+	}
+
+	// The old file keeps getting every command too: if the rewrite fails
+	// or the server dies during it, the old file is still complete
 	if err := l.w.WriteReply(cmd); err != nil {
 		return err
 	}
@@ -86,6 +119,24 @@ func (l *Log) Append(args []string) error {
 		return l.f.Sync()
 	}
 	return nil
+}
+
+// NeedsRewrite reports whether the file has grown enough to be worth
+// rewriting: at least RewriteMinSize, and twice as big as after the last
+// rewrite. It is false while a rewrite is running.
+func (l *Log) NeedsRewrite() bool {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+
+	return !l.rewriting && l.cw.n >= l.RewriteMinSize && l.cw.n >= 2*l.baseSize
+}
+
+// Size returns the current size of the file in bytes.
+func (l *Log) Size() int64 {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+
+	return l.cw.n
 }
 
 // Close flushes, fsyncs and closes the file.
@@ -198,6 +249,18 @@ type countingReader struct {
 
 func (c *countingReader) Read(p []byte) (int, error) {
 	n, err := c.r.Read(p)
+	c.n += int64(n)
+	return n, err
+}
+
+// countingWriter counts the bytes written through it.
+type countingWriter struct {
+	w io.Writer
+	n int64
+}
+
+func (c *countingWriter) Write(p []byte) (int, error) {
+	n, err := c.w.Write(p)
 	c.n += int64(n)
 	return n, err
 }
