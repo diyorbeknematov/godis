@@ -1,0 +1,5 @@
+# Build output
+/godis
+
+# Data written by -appendonly
+*.aof
