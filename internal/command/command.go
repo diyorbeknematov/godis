@@ -1,6 +1,7 @@
 package command
 
 import (
+	"errors"
 	"strconv"
 	"strings"
 	"time"
@@ -65,6 +66,27 @@ var commands = map[string]Command{
 	"STRLEN": {Arity: 2, Handler: strlen},
 	"MGET":   {Arity: -2, Handler: mget},
 	"MSET":   {Arity: -3, Handler: mset, Write: true},
+
+	"TYPE": {Arity: 2, Handler: typeCmd},
+
+	"LPUSH":  {Arity: -3, Handler: lpush, Write: true},
+	"RPUSH":  {Arity: -3, Handler: rpush, Write: true},
+	"LPOP":   {Arity: 2, Handler: lpop, Write: true},
+	"RPOP":   {Arity: 2, Handler: rpop, Write: true},
+	"LLEN":   {Arity: 2, Handler: llen},
+	"LRANGE": {Arity: 4, Handler: lrange},
+
+	"HSET":    {Arity: -4, Handler: hset, Write: true},
+	"HGET":    {Arity: 3, Handler: hget},
+	"HDEL":    {Arity: -3, Handler: hdel, Write: true},
+	"HGETALL": {Arity: 2, Handler: hgetall},
+	"HLEN":    {Arity: 2, Handler: hlen},
+
+	"SADD":      {Arity: -3, Handler: sadd, Write: true},
+	"SREM":      {Arity: -3, Handler: srem, Write: true},
+	"SISMEMBER": {Arity: 3, Handler: sismember},
+	"SMEMBERS":  {Arity: 2, Handler: smembers},
+	"SCARD":     {Arity: 2, Handler: scard},
 }
 
 // Execute looks up the command, checks its arity and runs it against s.
@@ -120,6 +142,21 @@ func arityOK(arity, n int) bool {
 		return n == arity
 	}
 	return n >= -arity
+}
+
+var errWrongType = resp.Error("WRONGTYPE Operation against a key holding the wrong kind of value")
+
+// storeError turns an error from the store into the reply Redis gives for it.
+func storeError(err error) resp.Reply {
+	switch {
+	case errors.Is(err, store.ErrWrongType):
+		return errWrongType
+	case errors.Is(err, store.ErrNotInteger):
+		return errNotInteger
+	case errors.Is(err, store.ErrOverflow):
+		return errOverflow
+	}
+	return resp.Error("ERR " + err.Error())
 }
 
 func wrongArgs(name string) resp.Reply {
@@ -216,7 +253,10 @@ func set(c *Context, args []string) resp.Reply {
 func get(c *Context, args []string) resp.Reply {
 	s := c.Store
 
-	value, ok := s.Get(args[1])
+	value, ok, err := s.Get(args[1])
+	if err != nil {
+		return storeError(err)
+	}
 	if !ok {
 		return resp.Null{}
 	}

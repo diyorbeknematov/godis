@@ -10,18 +10,18 @@ import (
 func TestSetGet(t *testing.T) {
 	s := New()
 
-	if _, ok := s.Get("ism"); ok {
+	if _, ok, _ := s.Get("ism"); ok {
 		t.Fatal("Get on empty store: ok = true, want false")
 	}
 
 	s.Set("ism", "Ali")
-	if got, ok := s.Get("ism"); !ok || got != "Ali" {
+	if got, ok, _ := s.Get("ism"); !ok || got != "Ali" {
 		t.Errorf("Get = %q, %v; want %q, true", got, ok, "Ali")
 	}
 
 	// Set overwrites the old value
 	s.Set("ism", "Vali")
-	if got, _ := s.Get("ism"); got != "Vali" {
+	if got, _, _ := s.Get("ism"); got != "Vali" {
 		t.Errorf("after overwrite: Get = %q, want %q", got, "Vali")
 	}
 }
@@ -31,7 +31,7 @@ func TestGetEmptyValue(t *testing.T) {
 	s := New()
 	s.Set("bosh", "")
 
-	if got, ok := s.Get("bosh"); !ok || got != "" {
+	if got, ok, _ := s.Get("bosh"); !ok || got != "" {
 		t.Errorf("Get = %q, %v; want \"\", true", got, ok)
 	}
 }
@@ -130,13 +130,13 @@ func TestSetWithTTL(t *testing.T) {
 	s.SetWithTTL("ism", "Ali", 10*time.Second)
 
 	advance(9 * time.Second)
-	if got, ok := s.Get("ism"); !ok || got != "Ali" {
+	if got, ok, _ := s.Get("ism"); !ok || got != "Ali" {
 		t.Fatalf("before deadline: Get = %q, %v; want %q, true", got, ok, "Ali")
 	}
 
 	// Exactly at the deadline the key is already gone
 	advance(1 * time.Second)
-	if _, ok := s.Get("ism"); ok {
+	if _, ok, _ := s.Get("ism"); ok {
 		t.Fatal("at deadline: Get ok = true, want false")
 	}
 	if n := s.Exists("ism"); n != 0 {
@@ -154,7 +154,7 @@ func TestSetClearsTTL(t *testing.T) {
 	s.Set("ism", "Vali")
 
 	advance(time.Hour)
-	if got, ok := s.Get("ism"); !ok || got != "Vali" {
+	if got, ok, _ := s.Get("ism"); !ok || got != "Vali" {
 		t.Errorf("Get = %q, %v; want %q, true", got, ok, "Vali")
 	}
 }
@@ -171,7 +171,7 @@ func TestExpire(t *testing.T) {
 		t.Fatal("Expire on existing key = false, want true")
 	}
 	advance(5 * time.Second)
-	if _, ok := s.Get("ism"); ok {
+	if _, ok, _ := s.Get("ism"); ok {
 		t.Error("after Expire deadline: Get ok = true, want false")
 	}
 

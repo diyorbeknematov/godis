@@ -52,8 +52,11 @@ func (s *Store) IncrBy(key string, delta int64) (int64, error) {
 	e, ok := s.getLocked(key, s.now())
 	var n int64
 	if ok {
-		var err error
-		if n, err = strconv.ParseInt(e.value, 10, 64); err != nil {
+		str, err := asString(e)
+		if err != nil {
+			return 0, err
+		}
+		if n, err = strconv.ParseInt(str, 10, 64); err != nil {
 			return 0, ErrNotInteger
 		}
 	}
@@ -71,23 +74,32 @@ func (s *Store) IncrBy(key string, delta int64) (int64, error) {
 
 // Append adds value to the end of the string at key and returns its new length.
 // A missing key is created. The key keeps its expiration.
-func (s *Store) Append(key, value string) int {
+func (s *Store) Append(key, value string) (int, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	e, _ := s.getLocked(key, s.now())
-	e.value += value
+	e, ok := s.getLocked(key, s.now())
+	str := ""
+	if ok {
+		var err error
+		if str, err = asString(e); err != nil {
+			return 0, err
+		}
+	}
+	str += value
+	e.value = str
 	s.data[key] = e
-	return len(e.value)
+	return len(str), nil
 }
 
 // Strlen returns the length of the value at key, or 0 if it does not exist.
-func (s *Store) Strlen(key string) int {
-	value, _ := s.Get(key)
-	return len(value)
+func (s *Store) Strlen(key string) (int, error) {
+	value, _, err := s.Get(key)
+	return len(value), err
 }
 
 // MGet returns the values of keys in the same order; nil marks a missing key.
+// A key holding another type is also nil, as in Redis: MGET never fails.
 func (s *Store) MGet(keys ...string) []*string {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -97,8 +109,9 @@ func (s *Store) MGet(keys ...string) []*string {
 	for i, key := range keys {
 		// Expired keys are only skipped here, like in Exists
 		if e, ok := s.data[key]; ok && !e.expired(now) {
-			v := e.value
-			values[i] = &v
+			if v, err := asString(e); err == nil {
+				values[i] = &v
+			}
 		}
 	}
 	return values

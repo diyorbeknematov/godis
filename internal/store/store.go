@@ -14,8 +14,10 @@ const (
 )
 
 // entry is a stored value with an optional expiration time.
+// value holds one of: string, []string (list), map[string]string (hash)
+// or map[string]struct{} (set). See types.go.
 type entry struct {
-	value     string
+	value     any
 	expiresAt time.Time // zero means the key never expires
 }
 
@@ -66,9 +68,10 @@ func (s *Store) SetWithTTL(key, value string, ttl time.Duration) {
 	s.data[key] = entry{value: value, expiresAt: s.now().Add(ttl)}
 }
 
-// Get returns the value for key. ok is false if the key does not exist
-// or has expired, which lets callers tell a missing key from an empty value.
-func (s *Store) Get(key string) (value string, ok bool) {
+// Get returns the string value for key. ok is false if the key does not
+// exist or has expired, which lets callers tell a missing key from an empty
+// value. A key holding another type gives ErrWrongType.
+func (s *Store) Get(key string) (value string, ok bool, err error) {
 	// Fast path: most keys are not expired, so a read lock is enough
 	s.mu.RLock()
 	e, ok := s.data[key]
@@ -76,10 +79,11 @@ func (s *Store) Get(key string) (value string, ok bool) {
 	s.mu.RUnlock()
 
 	if !ok {
-		return "", false
+		return "", false, nil
 	}
 	if !expired {
-		return e.value, true
+		v, err := asString(e)
+		return v, err == nil, err
 	}
 
 	// Slow path: an RLock cannot be upgraded, so take a write lock separately.
@@ -88,8 +92,11 @@ func (s *Store) Get(key string) (value string, ok bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	e, ok = s.getLocked(key, s.now())
-	return e.value, ok
+	if e, ok = s.getLocked(key, s.now()); !ok {
+		return "", false, nil
+	}
+	v, err := asString(e)
+	return v, err == nil, err
 }
 
 // Del removes the given keys and returns how many of them existed.

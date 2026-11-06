@@ -49,6 +49,36 @@ OK
 | `INCRBY` / `DECRBY` | `INCRBY key delta` | the new value |
 | `APPEND` | `APPEND key value` | length of the new string |
 | `STRLEN` | `STRLEN key` | length in bytes, `0` if the key does not exist |
+| `TYPE` | `TYPE key` | `string`, `list`, `hash`, `set` or `none` |
+
+**Lists**
+
+| Command | Syntax | Reply |
+|---|---|---|
+| `LPUSH` / `RPUSH` | `LPUSH key value [value ...]` | length of the list |
+| `LPOP` / `RPOP` | `LPOP key` | the element, or nil if the list is empty |
+| `LLEN` | `LLEN key` | length of the list |
+| `LRANGE` | `LRANGE key start stop` | elements from `start` to `stop`; negative indexes count from the end |
+
+**Hashes**
+
+| Command | Syntax | Reply |
+|---|---|---|
+| `HSET` | `HSET key field value [field value ...]` | number of new fields |
+| `HGET` | `HGET key field` | the value, or nil |
+| `HDEL` | `HDEL key field [field ...]` | number of fields removed |
+| `HGETALL` | `HGETALL key` | array of fields and values |
+| `HLEN` | `HLEN key` | number of fields |
+
+**Sets**
+
+| Command | Syntax | Reply |
+|---|---|---|
+| `SADD` | `SADD key member [member ...]` | number of new members |
+| `SREM` | `SREM key member [member ...]` | number of members removed |
+| `SISMEMBER` | `SISMEMBER key member` | `1` or `0` |
+| `SMEMBERS` | `SMEMBERS key` | array of members |
+| `SCARD` | `SCARD key` | number of members |
 | `DEL` | `DEL key [key ...]` | number of keys removed |
 | `EXISTS` | `EXISTS key [key ...]` | number of keys that exist |
 | `EXPIRE` | `EXPIRE key seconds` | `1` if the timeout was set, `0` if the key does not exist |
@@ -58,7 +88,10 @@ OK
 | `PERSIST` | `PERSIST key` | `1` if a timeout was removed, `0` otherwise |
 
 Command names are case-insensitive. Error messages follow Redis, for example
-`ERR wrong number of arguments for 'get' command`.
+`ERR wrong number of arguments for 'get' command`. A command on a key of
+another type, such as `GET` on a list, fails with `WRONGTYPE`; `SET` replaces
+a key of any type. As in Redis, removing the last element of a list, hash or
+set removes the key.
 
 ## Getting started
 
@@ -134,6 +167,10 @@ strings and returns a `resp.Reply`, without any network or I/O.
 - **Command table with arity.** Every command declares how many arguments it
   takes, and the check runs in one place before the handler is called, so
   handlers can trust their arguments.
+- **One store, many types.** Each entry holds a `string`, `[]string`,
+  `map[string]string` or `map[string]struct{}`, checked by a type switch.
+  Read methods return copies, because the caller uses them after the lock is
+  released while other clients may change the original.
 - **Closed reply types.** `resp.Reply` is an interface with an unexported
   method, so only the reply types in the `resp` package can be returned.
 - **Reply sanitizing.** `\r` and `\n` in simple strings and errors are replaced
@@ -159,7 +196,8 @@ strings and returns a `resp.Reply`, without any network or I/O.
 
 ## Limitations
 
-- Only string values. No lists, hashes, sets or sorted sets.
+- No sorted sets.
+- Lists are slices, so `LPUSH` is O(n); a deque would make both ends O(1).
 - The AOF only grows: there is no rewrite yet, so 1000 `SET`s to one key
   are 1000 entries in the file.
 - No authentication, no TLS.
@@ -170,5 +208,5 @@ strings and returns a `resp.Reply`, without any network or I/O.
 ## Roadmap
 
 - [ ] AOF rewrite, to compact the file
-- [ ] More data types: lists, hashes
+- [ ] Sorted sets
 - [ ] `KEYS`, `FLUSHALL`

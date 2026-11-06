@@ -19,7 +19,7 @@ func TestIncrBy(t *testing.T) {
 	if n, err := s.IncrBy("n", -7); err != nil || n != -2 {
 		t.Fatalf("IncrBy(-7) = %d, %v; want -2, nil", n, err)
 	}
-	if got, _ := s.Get("n"); got != "-2" {
+	if got, _, _ := s.Get("n"); got != "-2" {
 		t.Errorf("stored value = %q, want \"-2\"", got)
 	}
 }
@@ -48,7 +48,7 @@ func TestIncrByErrors(t *testing.T) {
 				t.Fatalf("error = %v, want %v", err, tt.want)
 			}
 			// A failed increment leaves the value as it was
-			if got, _ := s.Get("k"); got != tt.value {
+			if got, _, _ := s.Get("k"); got != tt.value {
 				t.Errorf("value changed to %q, want %q", got, tt.value)
 			}
 		})
@@ -69,7 +69,7 @@ func TestIncrByConcurrent(t *testing.T) {
 	}
 	wg.Wait()
 
-	if got, _ := s.Get("n"); got != "100" {
+	if got, _, _ := s.Get("n"); got != "100" {
 		t.Errorf("after 100 increments: %q, want \"100\"", got)
 	}
 }
@@ -108,21 +108,21 @@ func TestIncrByExpired(t *testing.T) {
 func TestAppendStrlen(t *testing.T) {
 	s, _ := newTestStore()
 
-	if n := s.Strlen("yoq"); n != 0 {
+	if n, _ := s.Strlen("yoq"); n != 0 {
 		t.Errorf("Strlen of missing key = %d, want 0", n)
 	}
-	if n := s.Append("k", "salom"); n != 5 {
+	if n, _ := s.Append("k", "salom"); n != 5 {
 		t.Errorf("Append to missing key = %d, want 5", n)
 	}
-	if n := s.Append("k", " dunyo"); n != 11 {
+	if n, _ := s.Append("k", " dunyo"); n != 11 {
 		t.Errorf("second Append = %d, want 11", n)
 	}
-	if got, _ := s.Get("k"); got != "salom dunyo" {
+	if got, _, _ := s.Get("k"); got != "salom dunyo" {
 		t.Errorf("value = %q, want \"salom dunyo\"", got)
 	}
 	// Length is in bytes, not letters: "ʻ" is 2 bytes in UTF-8
 	s.Set("u", "oʻ")
-	if n := s.Strlen("u"); n != 3 {
+	if n, _ := s.Strlen("u"); n != 3 {
 		t.Errorf("Strlen(\"oʻ\") = %d, want 3", n)
 	}
 }
@@ -178,7 +178,7 @@ func TestSetIf(t *testing.T) {
 	if !s.SetIf("k", "3", time.Time{}, IfExists) {
 		t.Error("XX on existing key did not write")
 	}
-	if got, _ := s.Get("k"); got != "3" {
+	if got, _, _ := s.Get("k"); got != "3" {
 		t.Errorf("value = %q, want \"3\"", got)
 	}
 

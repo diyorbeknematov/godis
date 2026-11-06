@@ -172,13 +172,13 @@ func TestAOFOrderMatchesStore(t *testing.T) {
 
 	replayed := replay(t, path)
 	for _, key := range []string{"k", "n"} {
-		want, _ := s.store.Get(key)
-		got, _ := replayed.Get(key)
+		want, _, _ := s.store.Get(key)
+		got, _, _ := replayed.Get(key)
 		if got != want {
 			t.Errorf("%s: replayed %q, in memory %q", key, got, want)
 		}
 	}
-	if got, _ := replayed.Get("n"); got != "1000" {
+	if got, _, _ := replayed.Get("n"); got != "1000" {
 		t.Errorf("n after replay = %q, want \"1000\"", got)
 	}
 }

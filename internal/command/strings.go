@@ -1,7 +1,6 @@
 package command
 
 import (
-	"errors"
 	"math"
 	"strconv"
 
@@ -50,13 +49,8 @@ func decrby(c *Context, args []string) resp.Reply {
 // incrBy runs the shared part of INCR, DECR, INCRBY and DECRBY.
 func incrBy(s *store.Store, key string, delta int64) resp.Reply {
 	n, err := s.IncrBy(key, delta)
-	switch {
-	case errors.Is(err, store.ErrNotInteger):
-		return errNotInteger
-	case errors.Is(err, store.ErrOverflow):
-		return errOverflow
-	case err != nil:
-		return resp.Error("ERR " + err.Error())
+	if err != nil {
+		return storeError(err)
 	}
 	return resp.Integer(n)
 }
@@ -65,13 +59,13 @@ func incrBy(s *store.Store, key string, delta int64) resp.Reply {
 func appendCmd(c *Context, args []string) resp.Reply {
 	s := c.Store
 
-	return resp.Integer(s.Append(args[1], args[2]))
+	return intReply(s.Append(args[1], args[2]))
 }
 
 func strlen(c *Context, args []string) resp.Reply {
 	s := c.Store
 
-	return resp.Integer(s.Strlen(args[1]))
+	return intReply(s.Strlen(args[1]))
 }
 
 // mget returns an array with one element per key: the value, or Null if missing.
@@ -100,4 +94,12 @@ func mset(c *Context, args []string) resp.Reply {
 	}
 	s.MSet(args[1:]...)
 	return resp.SimpleString("OK")
+}
+
+// intReply turns a store result that is a count or a length into a reply.
+func intReply(n int, err error) resp.Reply {
+	if err != nil {
+		return storeError(err)
+	}
+	return resp.Integer(n)
 }
