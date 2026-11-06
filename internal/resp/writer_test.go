@@ -115,6 +115,17 @@ func TestWriteReply(t *testing.T) {
 		{name: "integer", reply: Integer(-5), want: ":-5\r\n"},
 		{name: "bulk string", reply: BulkString("Ali"), want: "$3\r\nAli\r\n"},
 		{name: "null", reply: Null{}, want: "$-1\r\n"},
+		{name: "empty array", reply: Array{}, want: "*0\r\n"},
+		{
+			name:  "array",
+			reply: Array{BulkString("Ali"), Null{}, Integer(5)},
+			want:  "*3\r\n$3\r\nAli\r\n$-1\r\n:5\r\n",
+		},
+		{
+			name:  "nested array",
+			reply: Array{Array{SimpleString("OK")}, BulkString("")},
+			want:  "*2\r\n*1\r\n+OK\r\n$0\r\n\r\n",
+		},
 	}
 
 	for _, tt := range tests {

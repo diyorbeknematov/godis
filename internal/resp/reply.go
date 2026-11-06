@@ -21,8 +21,12 @@ type BulkString string
 // Null is the reply for a missing key, $-1.
 type Null struct{}
 
+// Array is a list of replies, e.g. *2\r\n$1\r\na\r\n$-1 for MGET.
+type Array []Reply
+
 func (SimpleString) reply() {}
 func (Error) reply()        {}
 func (Integer) reply()      {}
 func (BulkString) reply()   {}
 func (Null) reply()         {}
+func (Array) reply()        {}

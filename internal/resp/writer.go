@@ -73,10 +73,26 @@ func (w *Writer) WriteReply(r Reply) error {
 		return w.WriteBulkString(string(v))
 	case Null:
 		return w.WriteNull()
+	case Array:
+		return w.writeArray(v)
 	default:
 		// Only reachable if a new Reply type is added without a case here
 		return fmt.Errorf("resp: unsupported reply type %T", r)
 	}
+}
+
+// writeArray writes the element count, then every element in turn.
+// Elements may be arrays themselves.
+func (w *Writer) writeArray(a Array) error {
+	if _, err := w.bw.WriteString("*" + strconv.Itoa(len(a)) + "\r\n"); err != nil {
+		return err
+	}
+	for _, r := range a {
+		if err := w.WriteReply(r); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // Flush sends buffered data to the connection. Nothing reaches the

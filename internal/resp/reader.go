@@ -28,6 +28,12 @@ func NewReader(r io.Reader) *Reader {
 	}
 }
 
+// Buffered returns how many bytes were read from the source but not consumed yet.
+// The AOF loader uses it to find where the last complete command ended.
+func (r *Reader) Buffered() int {
+	return r.rd.Buffered()
+}
+
 func (r *Reader) ReadCommand() ([]string, error) {
 	line, err := r.readLine()
 	if err != nil {
